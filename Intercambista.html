@@ -1,0 +1,1644 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>🎓 Exchange Student Adventure ✈️</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    touch-action: none;
+  }
+  #gameContainer {
+    position: relative;
+    width: 400px;
+    height: 600px;
+  }
+  canvas {
+    display: block;
+    border-radius: 12px;
+    box-shadow: 0 0 60px rgba(80, 120, 255, 0.4), 0 0 120px rgba(80, 120, 255, 0.15);
+  }
+  #ui {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+  }
+  /* Popup de conquista */
+  #achievementPopup {
+    position: absolute;
+    top: 20px; left: 50%;
+    transform: translateX(-50%) translateY(-80px);
+    background: linear-gradient(135deg, #1a1a3e, #2a2a5e);
+    border: 2px solid #ffd700;
+    border-radius: 12px;
+    padding: 10px 20px;
+    color: #ffd700;
+    font-size: 14px;
+    font-weight: bold;
+    text-align: center;
+    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: none;
+    z-index: 100;
+    white-space: nowrap;
+  }
+  #achievementPopup.show {
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="gameCanvas" width="400" height="600"></canvas>
+  <div id="ui">
+    <div id="achievementPopup">🎖 Conquista!</div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  EXCHANGE STUDENT ADVENTURE — código completo
+//  Inspirado em Flappy Bird, tema intercâmbio universitário
+// ============================================================
+
+/* ---------- UTILITÁRIOS ---------- */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+
+// Aleatorio entre min e max
+const rnd = (min, max) => Math.random() * (max - min) + min;
+const rndInt = (min, max) => Math.floor(rnd(min, max + 1));
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+/* ---------- ÁUDIO (Web Audio API) ---------- */
+class AudioManager {
+  constructor() {
+    this.ctx = null;
+    this.init();
+  }
+  init() {
+    try {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch(e) { /* áudio não disponível */ }
+  }
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  }
+  // Toca tom sintético
+  play(freq, type, duration, volume = 0.3, detune = 0) {
+    if (!this.ctx) return;
+    try {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+      osc.detune.setValueAtTime(detune, this.ctx.currentTime);
+      gain.gain.setValueAtTime(volume, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+      osc.start();
+      osc.stop(this.ctx.currentTime + duration);
+    } catch(e) {}
+  }
+  jump() {
+    this.play(440, 'sine', 0.12, 0.2);
+    this.play(660, 'sine', 0.08, 0.15);
+  }
+  point() {
+    this.play(523, 'sine', 0.1, 0.2);
+    this.play(659, 'sine', 0.1, 0.18);
+    this.play(784, 'sine', 0.15, 0.2);
+  }
+  collect() {
+    this.play(880, 'sine', 0.08, 0.25);
+    this.play(1108, 'sine', 0.12, 0.2);
+    this.play(1320, 'sine', 0.15, 0.22);
+  }
+  achievement() {
+    [523, 659, 784, 1047].forEach((f, i) =>
+      setTimeout(() => this.play(f, 'sine', 0.3, 0.25), i * 80));
+  }
+  gameOver() {
+    this.play(440, 'sawtooth', 0.15, 0.3);
+    setTimeout(() => this.play(330, 'sawtooth', 0.2, 0.3), 150);
+    setTimeout(() => this.play(220, 'sawtooth', 0.25, 0.5), 300);
+  }
+}
+const audio = new AudioManager();
+
+/* ---------- PARTÍCULAS ---------- */
+class Particle {
+  constructor(x, y, options = {}) {
+    this.x = x; this.y = y;
+    this.vx = rnd(-3, 3) * (options.spread || 1);
+    this.vy = rnd(-5, -1) * (options.spread || 1);
+    this.alpha = 1;
+    this.size = rnd(3, 8) * (options.size || 1);
+    this.color = options.color || `hsl(${rndInt(0,360)},100%,60%)`;
+    this.gravity = options.gravity !== undefined ? options.gravity : 0.15;
+    this.life = options.life || 60;
+    this.maxLife = this.life;
+    this.shape = options.shape || 'circle';
+    this.rotation = rnd(0, Math.PI * 2);
+    this.rotSpeed = rnd(-0.2, 0.2);
+  }
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.vy += this.gravity;
+    this.life--;
+    this.alpha = this.life / this.maxLife;
+    this.rotation += this.rotSpeed;
+    return this.life > 0;
+  }
+  draw(ctx) {
+    ctx.save();
+    ctx.globalAlpha = this.alpha;
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rotation);
+    ctx.fillStyle = this.color;
+    if (this.shape === 'rect') {
+      ctx.fillRect(-this.size/2, -this.size/2, this.size, this.size * 0.6);
+    } else if (this.shape === 'star') {
+      drawStar(ctx, 0, 0, 5, this.size, this.size/2);
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, this.size/2, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawStar(ctx, cx, cy, spikes, outerR, innerR) {
+  let rot = (Math.PI / 2) * 3;
+  const step = Math.PI / spikes;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - outerR);
+  for (let i = 0; i < spikes; i++) {
+    ctx.lineTo(cx + Math.cos(rot) * outerR, cy + Math.sin(rot) * outerR);
+    rot += step;
+    ctx.lineTo(cx + Math.cos(rot) * innerR, cy + Math.sin(rot) * innerR);
+    rot += step;
+  }
+  ctx.lineTo(cx, cy - outerR);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* ---------- CENÁRIOS / FASES ---------- */
+const PHASES = [
+  {
+    name: 'Aeroporto', minScore: 0,
+    sky1: '#1a1a3e', sky2: '#2d4a7a', ground: '#4a3728',
+    groundTop: '#6b5240', accent: '#5599ff',
+    elements: ['airplane', 'cloud', 'tower'],
+    bgColor: '#1a2a4a'
+  },
+  {
+    name: 'Campus Universitário', minScore: 10,
+    sky1: '#1a3a2a', sky2: '#2a6a3a', ground: '#3a6a2a',
+    groundTop: '#4a8a3a', accent: '#44cc66',
+    elements: ['building', 'tree', 'bicycle'],
+    bgColor: '#1a3a20'
+  },
+  {
+    name: 'Biblioteca', minScore: 20,
+    sky1: '#2a1a3e', sky2: '#3a2a5e', ground: '#4a3a2a',
+    groundTop: '#6a5a3a', accent: '#cc88ff',
+    elements: ['bookshelf', 'lamp', 'desk'],
+    bgColor: '#2a1a3a'
+  },
+  {
+    name: 'Cidade Internacional', minScore: 30,
+    sky1: '#0a0a1a', sky2: '#1a1a3a', ground: '#2a2a3a',
+    groundTop: '#3a3a4a', accent: '#ff8844',
+    elements: ['skyscraper', 'bus', 'monument'],
+    bgColor: '#0a0a1a'
+  },
+  {
+    name: 'Formatura!', minScore: 40,
+    sky1: '#3a1a0a', sky2: '#6a3a0a', ground: '#4a3a0a',
+    groundTop: '#6a5a0a', accent: '#ffd700',
+    elements: ['diploma', 'cap', 'confetti'],
+    bgColor: '#2a1a00'
+  }
+];
+
+/* ---------- DEFINIÇÃO DOS OBSTÁCULOS ---------- */
+const OBSTACLE_TYPES = [
+  // Tipo 1: Provas e trabalhos
+  {
+    name: 'Provas',
+    draw: (ctx, x, topH, botY, botH, w) => {
+      // Topo: pilha de livros
+      const bh = 28, bw = w - 4;
+      const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12'];
+      for (let i = 0; i < Math.floor(topH / bh); i++) {
+        ctx.fillStyle = colors[i % colors.length];
+        ctx.fillRect(x + 2, i * bh, bw, bh - 2);
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.fillRect(x + 2, i * bh + bh - 4, bw, 4);
+        // Lombada
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(x + 2, i * bh, 6, bh - 2);
+      }
+      // Base topo
+      ctx.fillStyle = '#555';
+      ctx.fillRect(x - 2, topH - 6, w + 4, 6);
+
+      // Base: folhas/apostilas
+      ctx.fillStyle = '#555';
+      ctx.fillRect(x - 2, botY, w + 4, 6);
+      for (let i = 0; i < Math.floor(botH / bh); i++) {
+        ctx.fillStyle = colors[(i + 2) % colors.length];
+        ctx.fillRect(x + 2, botY + 6 + i * bh, bw, bh - 2);
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.fillRect(x + 2, botY + 6 + i * bh + bh - 4, bw, 4);
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(x + 2, botY + 6 + i * bh, 6, bh - 2);
+      }
+    }
+  },
+  // Tipo 2: Documentação
+  {
+    name: 'Documentos',
+    draw: (ctx, x, topH, botY, botH, w) => {
+      const dw = w - 4;
+      // Topo: passaportes e formulários
+      const drawDoc = (dx, dy, dh, color) => {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(dx, dy, dw, dh - 2, 3);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.fillRect(dx + 4, dy + 4, dw - 8, 3);
+        ctx.fillRect(dx + 4, dy + 10, dw - 8, 2);
+        ctx.fillRect(dx + 4, dy + 15, (dw - 8) * 0.6, 2);
+        // Carimbo
+        ctx.strokeStyle = '#e74c3c';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(dx + dw - 12, dy + dh - 12, 7, 0, Math.PI * 2);
+        ctx.stroke();
+      };
+      const dh = 32;
+      const passColors = ['#1a3a6a','#2a5a2a','#6a1a1a'];
+      for (let i = 0; i < Math.floor(topH / dh); i++) {
+        drawDoc(x + 2, i * dh, dh, passColors[i % passColors.length]);
+      }
+      ctx.fillStyle = '#777';
+      ctx.fillRect(x - 2, topH - 6, w + 4, 6);
+      // Base
+      ctx.fillStyle = '#777';
+      ctx.fillRect(x - 2, botY, w + 4, 6);
+      for (let i = 0; i < Math.floor(botH / dh); i++) {
+        drawDoc(x + 2, botY + 6 + i * dh, dh, passColors[(i + 1) % passColors.length]);
+      }
+    }
+  },
+  // Tipo 3: Problemas financeiros
+  {
+    name: 'Finanças',
+    draw: (ctx, x, topH, botY, botH, w) => {
+      const dw = w - 4;
+      const drawBoleto = (dx, dy, dh) => {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(dx, dy, dw, dh - 2);
+        // Faixa vermelha de urgente
+        ctx.fillStyle = '#e74c3c';
+        ctx.fillRect(dx, dy, dw, 8);
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        // Barras de código
+        for (let b = 0; b < 20; b++) {
+          const bw2 = b % 3 === 0 ? 3 : 2;
+          ctx.fillRect(dx + 2 + b * (dw - 4) / 20, dy + 10, bw2, dh - 14);
+        }
+        // $ símbolo
+        ctx.fillStyle = '#e74c3c';
+        ctx.font = `bold ${dh * 0.4}px Arial`;
+        ctx.fillText('$', dx + dw - 14, dy + dh - 4);
+      };
+      const bh = 28;
+      for (let i = 0; i < Math.floor(topH / bh); i++) {
+        drawBoleto(x + 2, i * bh, bh);
+      }
+      ctx.fillStyle = '#c0392b';
+      ctx.fillRect(x - 2, topH - 6, w + 4, 6);
+      ctx.fillStyle = '#c0392b';
+      ctx.fillRect(x - 2, botY, w + 4, 6);
+      for (let i = 0; i < Math.floor(botH / bh); i++) {
+        drawBoleto(x + 2, botY + 6 + i * bh, bh);
+      }
+    }
+  },
+  // Tipo 4: Idioma
+  {
+    name: 'Idioma',
+    draw: (ctx, x, topH, botY, botH, w) => {
+      const words = ['HELP!','WHY?','WHAT?','HOW?','OMG','NOPE','???','!#@$'];
+      const colors2 = ['#9b59b6','#3498db','#e67e22','#e74c3c','#1abc9c'];
+      const drawBubble = (bx, by, bw2, bh, word, color) => {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, bw2, bh, 6);
+        ctx.fill();
+        // cauda do balão
+        ctx.beginPath();
+        ctx.moveTo(bx + bw2 * 0.3, by + bh);
+        ctx.lineTo(bx + bw2 * 0.3 + 8, by + bh + 8);
+        ctx.lineTo(bx + bw2 * 0.5, by + bh);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${Math.min(bh * 0.5, 13)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.fillText(word, bx + bw2 / 2, by + bh * 0.65);
+        ctx.textAlign = 'left';
+      };
+      const bh = 36, bw2 = w - 4;
+      for (let i = 0; i < Math.floor(topH / bh); i++) {
+        drawBubble(x + 2, i * bh, bw2, bh - 4,
+          words[i % words.length], colors2[i % colors2.length]);
+      }
+      ctx.fillStyle = '#7f5ab6';
+      ctx.fillRect(x - 2, topH - 6, w + 4, 6);
+      ctx.fillStyle = '#7f5ab6';
+      ctx.fillRect(x - 2, botY, w + 4, 6);
+      for (let i = 0; i < Math.floor(botH / bh); i++) {
+        drawBubble(x + 2, botY + 6 + i * bh, bw2, bh - 4,
+          words[(i + 4) % words.length], colors2[(i + 2) % colors2.length]);
+      }
+    }
+  }
+];
+
+/* ---------- COLECIONÁVEIS ---------- */
+const COLLECTIBLE_TYPES = [
+  { type: 'passport', label: '🛂', color: '#1a3a6a', points: 2, duration: 0,  effect: 'points' },
+  { type: 'scholarship', label: '🎓', color: '#ffd700', points: 0, duration: 300, effect: 'invincible' },
+  { type: 'flag', label: '🌍', color: '#27ae60', points: 0, duration: 180, effect: 'multiplier' },
+  { type: 'diploma', label: '📜', color: '#c0392b', points: 5, duration: 0, effect: 'points' }
+];
+
+/* ---------- CLASSE DO PERSONAGEM ---------- */
+class Player {
+  constructor() {
+    this.x = 80;
+    this.y = H / 2;
+    this.vy = 0;
+    this.angle = 0;
+    this.radius = 18;
+    this.bobOffset = 0;
+    this.bobTimer = 0;
+    this.invincible = false;
+    this.invincibleTimer = 0;
+    this.flash = false;
+    this.flashTimer = 0;
+  }
+
+  jump() {
+    this.vy = -8;
+    audio.jump();
+  }
+
+  update() {
+    const gravity = 0.38;
+    this.vy += gravity;
+    this.vy = clamp(this.vy, -10, 12);
+    this.y += this.vy;
+
+    // Inclinação baseada na velocidade vertical
+    this.angle = clamp(this.vy * 4, -30, 60) * (Math.PI / 180);
+
+    // Efeito de flutuação leve
+    this.bobTimer += 0.06;
+    this.bobOffset = Math.sin(this.bobTimer) * 2;
+
+    // Invencibilidade
+    if (this.invincible) {
+      this.invincibleTimer--;
+      this.flashTimer++;
+      this.flash = Math.floor(this.flashTimer / 5) % 2 === 0;
+      if (this.invincibleTimer <= 0) {
+        this.invincible = false;
+        this.flash = false;
+      }
+    }
+  }
+
+  // Desenha o personagem no canvas
+  draw(ctx) {
+    if (this.flash && this.invincible) return; // pisca durante invencibilidade
+    ctx.save();
+    ctx.translate(this.x, this.y + this.bobOffset);
+    ctx.rotate(this.angle);
+
+    // Brilho de invencibilidade
+    if (this.invincible) {
+      ctx.shadowColor = '#ffd700';
+      ctx.shadowBlur = 20;
+    }
+
+    // Corpo do estudante
+    // --- Mochila (atrás do personagem) ---
+    ctx.fillStyle = '#2980b9';
+    ctx.beginPath();
+    ctx.roundRect(-8, -10, 10, 16, 3);
+    ctx.fill();
+    ctx.fillStyle = '#1a5276';
+    ctx.fillRect(-6, -8, 6, 4);
+    ctx.fillRect(-6, -2, 6, 4);
+
+    // --- Corpo: camiseta universitária ---
+    ctx.fillStyle = '#c0392b';
+    ctx.beginPath();
+    ctx.roundRect(-6, -4, 20, 16, 4);
+    ctx.fill();
+    // Letras da uni na camiseta
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 7px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('UNI', 4, 6);
+
+    // --- Cabeça ---
+    ctx.fillStyle = '#f5cba7';
+    ctx.beginPath();
+    ctx.arc(4, -12, 10, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cabelo
+    ctx.fillStyle = '#4a2900';
+    ctx.beginPath();
+    ctx.arc(4, -19, 7, Math.PI, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(-3, -21, 14, 5);
+
+    // Olhos
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, -14, 5, 4);
+    ctx.fillRect(7, -14, 5, 4);
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(2, -13, 2, 3);
+    ctx.fillRect(9, -13, 2, 3);
+
+    // Sorriso
+    ctx.strokeStyle = '#a0522d';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(4, -8, 4, 0.2, Math.PI - 0.2);
+    ctx.stroke();
+
+    // Passaporte na mão
+    ctx.fillStyle = '#1a3a6a';
+    ctx.beginPath();
+    ctx.roundRect(12, 0, 8, 10, 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffd700';
+    ctx.font = '5px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('BR', 16, 7);
+
+    // Pernas
+    ctx.fillStyle = '#2c3e50';
+    ctx.fillRect(-2, 12, 7, 10);
+    ctx.fillRect(8, 12, 7, 10);
+    // Sapatos
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath();
+    ctx.ellipse(1, 22, 5, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(11, 22, 5, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  getBounds() {
+    return { x: this.x - 10, y: this.y - 14, w: 24, h: 36 };
+  }
+}
+
+/* ---------- CLASSE OBSTÁCULO ---------- */
+class Obstacle {
+  constructor(x, gapY, gapSize, speed) {
+    this.x = x;
+    this.gapY = gapY;
+    this.gapSize = gapSize;
+    this.speed = speed;
+    this.width = 54;
+    this.scored = false;
+    this.typeIndex = rndInt(0, OBSTACLE_TYPES.length - 1);
+    this.type = OBSTACLE_TYPES[this.typeIndex];
+  }
+
+  update() {
+    this.x -= this.speed;
+  }
+
+  draw(ctx) {
+    const topH = this.gapY;
+    const botY = this.gapY + this.gapSize;
+    const botH = H - botY;
+    this.type.draw(ctx, this.x, topH, botY, botH, this.width);
+  }
+
+  isOffScreen() {
+    return this.x + this.width < 0;
+  }
+
+  collides(player) {
+    if (player.invincible) return false;
+    const b = player.getBounds();
+    const margin = 4;
+    const px = b.x + margin, py = b.y + margin;
+    const pw = b.w - margin * 2, ph = b.h - margin * 2;
+    // Colisão com obstáculo de topo
+    if (px < this.x + this.width && px + pw > this.x) {
+      if (py < this.gapY || py + ph > this.gapY + this.gapSize) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+/* ---------- CLASSE COLETÁVEL ---------- */
+class Collectible {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.typeIndex = rndInt(0, COLLECTIBLE_TYPES.length - 1);
+    this.info = COLLECTIBLE_TYPES[this.typeIndex];
+    this.radius = 16;
+    this.collected = false;
+    this.glowTimer = 0;
+    this.speed = 0; // mesma velocidade do obstáculo passado externamente
+  }
+
+  update(speed) {
+    this.x -= speed;
+    this.glowTimer += 0.1;
+  }
+
+  draw(ctx) {
+    const glow = 6 + Math.sin(this.glowTimer) * 4;
+    ctx.save();
+    ctx.shadowColor = this.info.color;
+    ctx.shadowBlur = glow;
+    // Círculo de fundo
+    ctx.fillStyle = this.info.color;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fill();
+    // Brilho superior
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.beginPath();
+    ctx.arc(this.x - 4, this.y - 4, this.radius * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    // Ícone
+    ctx.shadowBlur = 0;
+    ctx.font = `${this.radius}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.info.label, this.x, this.y + 1);
+    ctx.textBaseline = 'alphabetic';
+    ctx.restore();
+  }
+
+  isOffScreen() { return this.x + this.radius < 0; }
+
+  collides(player) {
+    const b = player.getBounds();
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    const dist = Math.hypot(cx - this.x, cy - this.y);
+    return dist < this.radius + 12;
+  }
+}
+
+/* ---------- ELEMENTOS DE CENÁRIO ---------- */
+class Background {
+  constructor() {
+    this.clouds = [];
+    this.bgElements = [];
+    this.groundY = H - 60;
+    this.phase = 0;
+    this.phaseTransition = 0;
+    this.prevPhase = 0;
+    this.stars = Array.from({length: 50}, () => ({
+      x: rnd(0, W), y: rnd(0, H * 0.6),
+      r: rnd(0.5, 2), twinkle: rnd(0, Math.PI * 2)
+    }));
+    this.generateClouds();
+    this.generateElements();
+  }
+
+  generateClouds() {
+    this.clouds = Array.from({length: 6}, () => ({
+      x: rnd(0, W), y: rnd(20, 150),
+      w: rnd(60, 140), h: rnd(25, 50),
+      speed: rnd(0.2, 0.6)
+    }));
+  }
+
+  generateElements() {
+    // Elementos de fundo por fase
+    this.bgElements = [];
+    const ph = PHASES[this.phase];
+    for (let i = 0; i < 3; i++) {
+      this.bgElements.push({
+        type: ph.elements[i % ph.elements.length],
+        x: rnd(50, W - 50),
+        y: rnd(H - 200, H - 80),
+        scale: rnd(0.5, 1),
+        parallax: rnd(0.1, 0.3)
+      });
+    }
+  }
+
+  setPhase(index) {
+    if (this.phase !== index) {
+      this.prevPhase = this.phase;
+      this.phase = index;
+      this.phaseTransition = 60; // frames de transição
+      this.generateElements();
+    }
+  }
+
+  update() {
+    // Move nuvens
+    this.clouds.forEach(c => {
+      c.x -= c.speed;
+      if (c.x + c.w < 0) {
+        c.x = W + rnd(20, 100);
+        c.y = rnd(20, 150);
+        c.w = rnd(60, 140);
+      }
+    });
+    // Piscamento estrelas
+    this.stars.forEach(s => s.twinkle += 0.05);
+    if (this.phaseTransition > 0) this.phaseTransition--;
+  }
+
+  draw(ctx) {
+    const ph = PHASES[this.phase];
+    // Gradiente de céu
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, ph.sky1);
+    grad.addColorStop(0.7, ph.sky2);
+    grad.addColorStop(1, ph.ground);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Estrelas (fases mais escuras)
+    if (this.phase === 0 || this.phase === 3) {
+      this.stars.forEach(s => {
+        ctx.globalAlpha = 0.4 + Math.sin(s.twinkle) * 0.3;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    // Nuvens
+    this.clouds.forEach(c => this.drawCloud(ctx, c, ph.accent));
+
+    // Elementos de fundo específicos da fase
+    this.bgElements.forEach(el => this.drawElement(ctx, el, ph));
+
+    // Chão
+    ctx.fillStyle = ph.ground;
+    ctx.fillRect(0, this.groundY, W, H - this.groundY);
+    ctx.fillStyle = ph.groundTop;
+    ctx.fillRect(0, this.groundY, W, 8);
+
+    // Overlay de transição
+    if (this.phaseTransition > 0) {
+      ctx.fillStyle = `rgba(0,0,0,${this.phaseTransition / 60 * 0.5})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  drawCloud(ctx, c, accent) {
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    ctx.fillStyle = accent;
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = 15;
+    ctx.beginPath();
+    ctx.ellipse(c.x + c.w * 0.5, c.y, c.w * 0.5, c.h * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(c.x + c.w * 0.3, c.y + 5, c.w * 0.35, c.h * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(c.x + c.w * 0.7, c.y + 5, c.w * 0.3, c.h * 0.35, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Desenha elementos decorativos de cada fase
+  drawElement(ctx, el, ph) {
+    ctx.save();
+    ctx.translate(el.x, el.y);
+    ctx.scale(el.scale, el.scale);
+    switch (el.type) {
+      case 'airplane': this.drawAirplane(ctx, ph.accent); break;
+      case 'tower': this.drawTower(ctx, ph.accent); break;
+      case 'building': this.drawBuilding(ctx, ph.accent); break;
+      case 'tree': this.drawTree(ctx); break;
+      case 'bookshelf': this.drawBookshelf(ctx); break;
+      case 'skyscraper': this.drawSkyscraper(ctx, ph.accent); break;
+      case 'diploma': this.drawDiplomaEl(ctx); break;
+      default: break;
+    }
+    ctx.restore();
+  }
+
+  drawAirplane(ctx, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 30, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Asas
+    ctx.beginPath();
+    ctx.moveTo(-5, 0); ctx.lineTo(-20, -20); ctx.lineTo(10, 0);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-5, 0); ctx.lineTo(-20, 20); ctx.lineTo(10, 0);
+    ctx.fill();
+    // Cauda
+    ctx.beginPath();
+    ctx.moveTo(-28, 0); ctx.lineTo(-38, -12); ctx.lineTo(-24, 0);
+    ctx.fill();
+  }
+
+  drawTower(ctx, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(-5, -60, 10, 60);
+    ctx.fillRect(-15, -20, 30, 8);
+    // Luz piscante
+    ctx.fillStyle = '#ff4444';
+    ctx.beginPath();
+    ctx.arc(0, -64, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  drawBuilding(ctx, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(-20, -50, 40, 50);
+    // Janelas
+    ctx.fillStyle = '#ffd700';
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+      ctx.fillRect(-15 + c * 14, -45 + r * 16, 8, 10);
+    }
+  }
+
+  drawTree(ctx) {
+    ctx.fillStyle = '#4a2900';
+    ctx.fillRect(-5, -15, 10, 20);
+    ctx.fillStyle = '#27ae60';
+    ctx.beginPath();
+    ctx.arc(0, -25, 20, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#2ecc71';
+    ctx.beginPath();
+    ctx.arc(-8, -30, 12, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  drawBookshelf(ctx) {
+    ctx.fillStyle = '#6a4a2a';
+    ctx.fillRect(-25, -40, 50, 45);
+    const colors2 = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6'];
+    for (let i = 0; i < 5; i++) {
+      ctx.fillStyle = colors2[i];
+      ctx.fillRect(-22 + i * 9, -36, 7, 38);
+    }
+  }
+
+  drawSkyscraper(ctx, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(-15, -80, 30, 80);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 2; c++) {
+      ctx.fillRect(-12 + c * 14, -76 + r * 10, 9, 7);
+    }
+  }
+
+  drawDiplomaEl(ctx) {
+    ctx.fillStyle = '#f5f0dc';
+    ctx.beginPath();
+    ctx.roundRect(-25, -20, 50, 40, 4);
+    ctx.fill();
+    ctx.strokeStyle = '#c0a000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-22, -17, 44, 34);
+    ctx.fillStyle = '#8b6914';
+    ctx.font = 'bold 8px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('DIPLOMA', 0, -2);
+    ctx.fillText('★ ★ ★', 0, 10);
+  }
+}
+
+/* ---------- SISTEMA DE CONQUISTAS ---------- */
+const ACHIEVEMENTS = [
+  { id: 'first', icon: '🎖', name: 'Primeiro Passo', score: 5 },
+  { id: 'visa', icon: '🎖', name: 'Visto Aprovado', score: 15 },
+  { id: 'boarding', icon: '🎖', name: 'Embarque Confirmado', score: 30 },
+  { id: 'international', icon: '🎖', name: 'Estudante Internacional', score: 40 },
+  { id: 'graduated', icon: '🎖', name: 'Formado no Exterior', score: 50 }
+];
+
+/* ---------- ESTADO GLOBAL DO JOGO ---------- */
+let gameState = 'menu'; // menu | playing | gameover | howto | credits
+let score = 0;
+let bestScore = parseInt(localStorage.getItem('esaBest') || '0');
+let multiplier = 1;
+let multiplierTimer = 0;
+let earnedAchievements = JSON.parse(localStorage.getItem('esaAchievements') || '[]');
+let newAchievements = [];
+
+let player, bg, obstacles, collectibles, particles;
+let frameCount = 0;
+let obstacleSpeed = 3;
+let obstacleInterval = 90;
+let gapSize = 180;
+let currentPhase = 0;
+let deathReason = '';
+let sessionAchievements = [];
+
+// Mensagens de derrota
+const DEATH_MSGS = [
+  'Seu visto foi recusado. 😢',
+  'Você esqueceu um documento importante!',
+  'O boleto venceu e a conta não foi paga.',
+  'Você perdeu o prazo de inscrição!',
+  'A entrevista em inglês não deu certo.',
+  'Faltou uma assinatura no formulário.',
+  'O passaporte estava vencido!',
+  'Você perdeu o voo internacional!'
+];
+
+/* ---------- INICIALIZAÇÃO ---------- */
+function initGame() {
+  player = new Player();
+  bg = new Background();
+  obstacles = [];
+  collectibles = [];
+  particles = [];
+  score = 0;
+  multiplier = 1;
+  multiplierTimer = 0;
+  frameCount = 0;
+  obstacleSpeed = 3;
+  obstacleInterval = 90;
+  gapSize = 180;
+  currentPhase = 0;
+  sessionAchievements = [];
+  deathReason = DEATH_MSGS[rndInt(0, DEATH_MSGS.length - 1)];
+  bg.setPhase(0);
+}
+
+/* ---------- LOOP PRINCIPAL ---------- */
+let lastTime = 0;
+function gameLoop(timestamp) {
+  const dt = timestamp - lastTime;
+  lastTime = timestamp;
+
+  ctx.clearRect(0, 0, W, H);
+
+  switch (gameState) {
+    case 'menu':     drawMenu(); break;
+    case 'playing':  updateGame(); drawGame(); break;
+    case 'gameover': drawGameOver(); break;
+    case 'howto':    drawHowTo(); break;
+    case 'credits':  drawCredits(); break;
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+/* ---------- ATUALIZAÇÃO DO JOGO ---------- */
+function updateGame() {
+  frameCount++;
+
+  // Dificuldade progressiva a cada 5 pontos
+  const diff = Math.floor(score / 5);
+  obstacleSpeed = 3 + diff * 0.4;
+  gapSize = Math.max(100, 180 - diff * 8);
+  obstacleInterval = Math.max(50, 90 - diff * 3);
+
+  // Fase atual
+  let phaseIndex = 0;
+  for (let i = PHASES.length - 1; i >= 0; i--) {
+    if (score >= PHASES[i].minScore) { phaseIndex = i; break; }
+  }
+  if (phaseIndex !== currentPhase) {
+    currentPhase = phaseIndex;
+    bg.setPhase(currentPhase);
+    // Efeito de transição
+    spawnConfetti();
+  }
+
+  // Multiplicador
+  if (multiplierTimer > 0) {
+    multiplierTimer--;
+    if (multiplierTimer <= 0) multiplier = 1;
+  }
+
+  // Atualiza background
+  bg.update();
+
+  // Atualiza player
+  player.update();
+
+  // Verifica colisão com chão/teto
+  if (player.y - 20 < 0 || player.y + 25 > bg.groundY) {
+    triggerGameOver();
+    return;
+  }
+
+  // Gera obstáculos
+  if (frameCount % obstacleInterval === 0) {
+    const gapY = rnd(60, bg.groundY - gapSize - 60);
+    obstacles.push(new Obstacle(W + 20, gapY, gapSize, obstacleSpeed));
+
+    // Às vezes gera um colecionável na lacuna
+    if (Math.random() < 0.4) {
+      const cx = W + 60;
+      const cy = gapY + gapSize / 2 + rnd(-20, 20);
+      collectibles.push(new Collectible(cx, cy));
+    }
+  }
+
+  // Atualiza obstáculos
+  obstacles = obstacles.filter(o => {
+    o.speed = obstacleSpeed; // ajusta velocidade em tempo real
+    o.update();
+    if (o.collides(player)) {
+      triggerGameOver();
+      return false;
+    }
+    // Pontua ao passar
+    if (!o.scored && o.x + o.width < player.x) {
+      o.scored = true;
+      score += multiplier;
+      audio.point();
+      checkAchievements();
+      spawnScoreParticles();
+    }
+    return !o.isOffScreen();
+  });
+
+  // Atualiza colecionáveis
+  collectibles = collectibles.filter(c => {
+    c.update(obstacleSpeed);
+    if (c.collides(player)) {
+      applyCollectible(c.info);
+      spawnCollectParticles(c.x, c.y, c.info.color);
+      audio.collect();
+      return false;
+    }
+    return !c.isOffScreen();
+  });
+
+  // Atualiza partículas
+  particles = particles.filter(p => p.update());
+}
+
+function applyCollectible(info) {
+  if (info.effect === 'points') {
+    score += info.points * multiplier;
+    checkAchievements();
+  } else if (info.effect === 'invincible') {
+    player.invincible = true;
+    player.invincibleTimer = info.duration;
+    player.flashTimer = 0;
+  } else if (info.effect === 'multiplier') {
+    multiplier = 2;
+    multiplierTimer = info.duration;
+  }
+}
+
+function checkAchievements() {
+  ACHIEVEMENTS.forEach(a => {
+    if (!earnedAchievements.includes(a.id) && score >= a.score) {
+      earnedAchievements.push(a.id);
+      sessionAchievements.push(a);
+      localStorage.setItem('esaAchievements', JSON.stringify(earnedAchievements));
+      showAchievementPopup(a);
+      audio.achievement();
+    }
+  });
+}
+
+function showAchievementPopup(a) {
+  const popup = document.getElementById('achievementPopup');
+  popup.textContent = `${a.icon} ${a.name}!`;
+  popup.classList.add('show');
+  setTimeout(() => popup.classList.remove('show'), 2500);
+}
+
+function triggerGameOver() {
+  if (score > bestScore) {
+    bestScore = score;
+    localStorage.setItem('esaBest', bestScore);
+  }
+  spawnConfetti();
+  audio.gameOver();
+  gameState = 'gameover';
+}
+
+/* ---------- SPAWN DE PARTÍCULAS ---------- */
+function spawnScoreParticles() {
+  for (let i = 0; i < 5; i++) {
+    particles.push(new Particle(player.x + 20, player.y, {
+      color: '#ffd700', size: 0.8, spread: 0.5, life: 30
+    }));
+  }
+}
+
+function spawnCollectParticles(x, y, color) {
+  for (let i = 0; i < 15; i++) {
+    particles.push(new Particle(x, y, { color, size: 1, spread: 1.5, life: 50 }));
+  }
+}
+
+function spawnConfetti() {
+  for (let i = 0; i < 40; i++) {
+    particles.push(new Particle(rnd(0, W), rnd(0, H / 2), {
+      color: `hsl(${rndInt(0,360)},100%,60%)`,
+      shape: Math.random() > 0.5 ? 'rect' : 'star',
+      size: 1.2, spread: 2.5, life: 120, gravity: 0.08
+    }));
+  }
+}
+
+/* ---------- DESENHO DO JOGO ---------- */
+function drawGame() {
+  bg.draw(ctx);
+
+  // Sombra do personagem no chão
+  ctx.save();
+  ctx.globalAlpha = 0.15;
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(player.x, bg.groundY - 2, 18, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Obstáculos
+  obstacles.forEach(o => o.draw(ctx));
+
+  // Colecionáveis
+  collectibles.forEach(c => c.draw(ctx));
+
+  // Partículas
+  particles.forEach(p => p.draw(ctx));
+
+  // Personagem
+  player.draw(ctx);
+
+  // HUD
+  drawHUD();
+}
+
+function drawHUD() {
+  // Painel de pontuação
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath();
+  ctx.roundRect(10, 10, 160, 60, 10);
+  ctx.fill();
+
+  // Pontuação
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px Arial';
+  ctx.fillText(`${score}`, 20, 42);
+
+  // Melhor
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '12px Arial';
+  ctx.fillText(`🏆 Recorde: ${bestScore}`, 20, 58);
+
+  // Fase
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath();
+  ctx.roundRect(W - 160, 10, 150, 40, 10);
+  ctx.fill();
+  ctx.fillStyle = PHASES[currentPhase].accent;
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText(PHASES[currentPhase].name, W - 15, 28);
+  ctx.fillStyle = '#fff';
+  ctx.font = '10px Arial';
+  ctx.fillText(`Fase ${currentPhase + 1}/5`, W - 15, 42);
+  ctx.textAlign = 'left';
+
+  // Multiplicador
+  if (multiplier > 1) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.beginPath();
+    ctx.roundRect(W / 2 - 40, 10, 80, 30, 8);
+    ctx.fill();
+    ctx.fillStyle = '#ff8844';
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`×${multiplier} pts!`, W / 2, 30);
+    ctx.textAlign = 'left';
+  }
+
+  // Invencibilidade
+  if (player.invincible) {
+    const pct = player.invincibleTimer / 300;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.beginPath();
+    ctx.roundRect(W / 2 - 45, 50, 90, 16, 6);
+    ctx.fill();
+    ctx.fillStyle = '#ffd700';
+    ctx.fillRect(W / 2 - 43, 52, 86 * pct, 12);
+    ctx.fillStyle = '#fff';
+    ctx.font = '9px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('★ INVENCÍVEL ★', W / 2, 62);
+    ctx.textAlign = 'left';
+  }
+
+  ctx.restore();
+}
+
+/* ---------- TELA INICIAL ---------- */
+let menuAnim = 0;
+let menuPlayerY = 0;
+let menuPlayerVY = -3;
+
+function drawMenu() {
+  menuAnim += 0.02;
+
+  // Fundo gradiente animado
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0a0a2e');
+  grad.addColorStop(0.5, '#1a1a5e');
+  grad.addColorStop(1, '#0a0a2e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Estrelas
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  for (let i = 0; i < 30; i++) {
+    const sx = ((i * 137 + menuAnim * 20) % W);
+    const sy = ((i * 73) % (H * 0.6));
+    const sr = 0.5 + Math.sin(menuAnim * 2 + i) * 0.5;
+    ctx.beginPath();
+    ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Avião decorativo
+  ctx.save();
+  ctx.translate(60 + Math.sin(menuAnim) * 15, 100 + Math.cos(menuAnim * 0.7) * 10);
+  ctx.rotate(Math.sin(menuAnim * 0.5) * 0.1);
+  ctx.fillStyle = '#5599ff';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 35, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-8, 0); ctx.lineTo(-25, -22); ctx.lineTo(12, 0);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-8, 0); ctx.lineTo(-25, 22); ctx.lineTo(12, 0);
+  ctx.fill();
+  ctx.restore();
+
+  // Título principal
+  ctx.save();
+  const titleY = 200 + Math.sin(menuAnim * 1.5) * 5;
+  ctx.textAlign = 'center';
+
+  // Sombra do título
+  ctx.shadowColor = '#5599ff';
+  ctx.shadowBlur = 30;
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px Arial';
+  ctx.fillText('🎓 EXCHANGE STUDENT', W / 2, titleY - 15);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 28px Arial';
+  ctx.fillText('ADVENTURE ✈️', W / 2, titleY + 20);
+  ctx.shadowBlur = 0;
+
+  // Subtítulo
+  ctx.fillStyle = 'rgba(200,220,255,0.8)';
+  ctx.font = '11px Arial';
+  ctx.fillText('"Sobreviva aos desafios do intercâmbio', W / 2, titleY + 55);
+  ctx.fillText('e alcance a formatura internacional."', W / 2, titleY + 70);
+
+  // Personagem animado na tela inicial
+  menuPlayerY += menuPlayerVY;
+  menuPlayerVY += 0.12;
+  if (menuPlayerY > 30) { menuPlayerVY = -3; }
+
+  ctx.restore();
+
+  // Desenha player flutuante
+  const tempPlayer = { x: W / 2, y: 310 + menuPlayerY, vy: menuPlayerVY,
+    angle: menuPlayerVY * 2 * Math.PI / 180, invincible: false, flash: false };
+  drawPlayerAt(ctx, tempPlayer);
+
+  // Botões
+  drawButton(ctx, W/2, 400, 160, 44, 'JOGAR', '#e74c3c', '#ff6b6b', 16);
+  drawButton(ctx, W/2, 458, 160, 38, 'COMO JOGAR', '#2980b9', '#3498db', 13);
+  drawButton(ctx, W/2, 507, 160, 38, 'CRÉDITOS', '#27ae60', '#2ecc71', 13);
+
+  // Recorde
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,215,0,0.8)';
+  ctx.font = '12px Arial';
+  ctx.fillText(`🏆 Recorde: ${bestScore}`, W / 2, 555);
+
+  // Conquistas
+  const earned = earnedAchievements.length;
+  ctx.fillStyle = 'rgba(200,200,200,0.6)';
+  ctx.font = '11px Arial';
+  ctx.fillText(`🎖 ${earned}/${ACHIEVEMENTS.length} conquistas`, W / 2, 575);
+}
+
+// Desenha o player numa posição customizada (para menus)
+function drawPlayerAt(ctx, p) {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.angle);
+  // Mochila
+  ctx.fillStyle = '#2980b9';
+  ctx.beginPath();
+  ctx.roundRect(-8, -10, 10, 16, 3);
+  ctx.fill();
+  // Corpo
+  ctx.fillStyle = '#c0392b';
+  ctx.beginPath();
+  ctx.roundRect(-6, -4, 20, 16, 4);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 7px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('UNI', 4, 6);
+  // Cabeça
+  ctx.fillStyle = '#f5cba7';
+  ctx.beginPath();
+  ctx.arc(4, -12, 10, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#4a2900';
+  ctx.beginPath();
+  ctx.arc(4, -19, 7, Math.PI, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(-3, -21, 14, 5);
+  // Olhos
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, -14, 5, 4);
+  ctx.fillRect(7, -14, 5, 4);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(2, -13, 2, 3);
+  ctx.fillRect(9, -13, 2, 3);
+  // Sorriso
+  ctx.strokeStyle = '#a0522d';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.arc(4, -8, 4, 0.2, Math.PI - 0.2);
+  ctx.stroke();
+  // Passaporte
+  ctx.fillStyle = '#1a3a6a';
+  ctx.beginPath();
+  ctx.roundRect(12, 0, 8, 10, 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '5px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('BR', 16, 7);
+  // Pernas
+  ctx.fillStyle = '#2c3e50';
+  ctx.fillRect(-2, 12, 7, 10);
+  ctx.fillRect(8, 12, 7, 10);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath();
+  ctx.ellipse(1, 22, 5, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(11, 22, 5, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/* ---------- BOTÃO HELPER ---------- */
+function drawButton(ctx, cx, cy, w, h, text, color1, color2, fontSize) {
+  const x = cx - w / 2, y = cy - h / 2;
+  const grad = ctx.createLinearGradient(x, y, x, y + h);
+  grad.addColorStop(0, color2);
+  grad.addColorStop(1, color1);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${fontSize}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.fillText(text, cx, cy + fontSize * 0.37);
+}
+
+function isButtonHit(cx, cy, w, h, mx, my) {
+  return mx >= cx - w / 2 && mx <= cx + w / 2 &&
+         my >= cy - h / 2 && my <= cy + h / 2;
+}
+
+/* ---------- TELA DE GAME OVER ---------- */
+let goAnim = 0;
+
+function drawGameOver() {
+  goAnim += 0.02;
+
+  // Fundo escurecido
+  ctx.fillStyle = 'rgba(10,10,20,0.92)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Partículas restantes
+  particles.forEach(p => p.draw(ctx));
+
+  // Painel central
+  const panW = 320, panH = 380;
+  const panX = (W - panW) / 2, panY = (H - panH) / 2;
+  const grad = ctx.createLinearGradient(panX, panY, panX, panY + panH);
+  grad.addColorStop(0, '#1a1a3e');
+  grad.addColorStop(1, '#0a0a1a');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(panX, panY, panW, panH, 16);
+  ctx.fill();
+  ctx.strokeStyle = '#e74c3c';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+
+  // Título game over
+  ctx.fillStyle = '#e74c3c';
+  ctx.font = 'bold 28px Arial';
+  ctx.shadowColor = '#e74c3c';
+  ctx.shadowBlur = 15;
+  ctx.fillText('GAME OVER', W / 2, panY + 50);
+  ctx.shadowBlur = 0;
+
+  // Motivo
+  ctx.fillStyle = 'rgba(255,200,200,0.85)';
+  ctx.font = '12px Arial';
+  const lines = wrapText(deathReason, 26);
+  lines.forEach((l, i) => ctx.fillText(l, W / 2, panY + 80 + i * 18));
+
+  // Pontuação
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 48px Arial';
+  ctx.shadowColor = '#ffd700';
+  ctx.shadowBlur = 20;
+  ctx.fillText(score, W / 2, panY + 158);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '12px Arial';
+  ctx.fillText('sua pontuação', W / 2, panY + 175);
+
+  // Recorde
+  ctx.fillStyle = score >= bestScore ? '#ffd700' : '#aaa';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillText(`🏆 Recorde: ${bestScore}`, W / 2, panY + 200);
+
+  // Conquistas da sessão
+  if (sessionAchievements.length > 0) {
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 12px Arial';
+    ctx.fillText('Conquistas obtidas:', W / 2, panY + 225);
+    sessionAchievements.forEach((a, i) => {
+      ctx.fillStyle = '#fff';
+      ctx.font = '11px Arial';
+      ctx.fillText(`${a.icon} ${a.name}`, W / 2, panY + 242 + i * 16);
+    });
+  }
+
+  // Botão jogar novamente
+  drawButton(ctx, W / 2, panY + panH - 50, 180, 44, '▶ JOGAR NOVAMENTE', '#e74c3c', '#ff6b6b', 14);
+
+  // Botão menu
+  drawButton(ctx, W / 2, panY + panH - 10, 120, 30, 'Menu', '#555', '#777', 12);
+
+  ctx.textAlign = 'left';
+}
+
+function wrapText(text, maxChars) {
+  const words = text.split(' ');
+  const lines = [];
+  let line = '';
+  words.forEach(w => {
+    if ((line + ' ' + w).trim().length <= maxChars) {
+      line = (line + ' ' + w).trim();
+    } else {
+      if (line) lines.push(line);
+      line = w;
+    }
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+
+/* ---------- TELA COMO JOGAR ---------- */
+function drawHowTo() {
+  ctx.fillStyle = '#0a0a1e';
+  ctx.fillRect(0, 0, W, H);
+
+  const grad = ctx.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, '#1a1a3e');
+  grad.addColorStop(1, '#0a0a1a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText('✈️ COMO JOGAR', W / 2, 60);
+
+  const items = [
+    ['🖱️ / Espaço', 'Clique ou pressione Espaço para pular'],
+    ['📱 Toque', 'Toque na tela no celular'],
+    ['📚 Obstáculos', 'Desvie de provas, documentos, boletos e idiomas'],
+    ['⭐ Colecionáveis', 'Colete itens especiais para bônus'],
+    ['🛂 Passaporte', '+2 pontos'],
+    ['🎓 Bolsa', 'Invencibilidade por 5 segundos'],
+    ['🌍 Bandeira', 'Dobra pontos por tempo limitado'],
+    ['📜 Diploma', '+5 pontos'],
+    ['🏆 Fases', '5 fases com dificuldade crescente'],
+    ['🎖 Conquistas', '5 conquistas para desbloquear'],
+  ];
+
+  items.forEach((item, i) => {
+    const y = 100 + i * 40;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.beginPath();
+    ctx.roundRect(20, y - 14, W - 40, 32, 8);
+    ctx.fill();
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 13px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(item[0], 36, y + 8);
+    ctx.fillStyle = 'rgba(200,220,255,0.85)';
+    ctx.font = '11px Arial';
+    ctx.textAlign = 'right';
+    ctx.fillText(item[1], W - 30, y + 8);
+  });
+
+  ctx.textAlign = 'center';
+  drawButton(ctx, W / 2, 555, 160, 40, '← VOLTAR', '#555', '#777', 13);
+}
+
+/* ---------- TELA DE CRÉDITOS ---------- */
+function drawCredits() {
+  ctx.fillStyle = '#0a0a1e';
+  ctx.fillRect(0, 0, W, H);
+
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#1a1a3e');
+  grad.addColorStop(1, '#0a0a1a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText('🎓 CRÉDITOS', W / 2, 70);
+
+  const lines = [
+    ['Exchange Student Adventure', 'bold 15px', '#fff'],
+    ['', '12px', '#aaa'],
+    ['Game Design & Code', 'bold 13px', '#ffd700'],
+    ['JavaScript + Canvas API', '12px', '#aaa'],
+    ['Web Audio API', '12px', '#aaa'],
+    ['', '12px', '#aaa'],
+    ['Inspirado em Flappy Bird', 'bold 13px', '#ffd700'],
+    ['por Dong Nguyen', '12px', '#aaa'],
+    ['', '12px', '#aaa'],
+    ['Dedicado a todos os estudantes', 'bold 13px', '#5599ff'],
+    ['brasileiros que sonham com', '12px', '#aaa'],
+    ['o intercâmbio internacional! 🌍', '12px', '#aaa'],
+    ['', '12px', '#aaa'],
+    ['Conquistas salvas no seu navegador', '11px', '#666'],
+    ['Recorde salvo automaticamente', '11px', '#666'],
+  ];
+
+  lines.forEach((l, i) => {
+    ctx.font = `${l[1]} Arial`;
+    ctx.fillStyle = l[2];
+    ctx.fillText(l[0], W / 2, 115 + i * 24);
+  });
+
+  drawButton(ctx, W / 2, 525, 160, 40, '← VOLTAR', '#555', '#777', 13);
+}
+
+/* ---------- CONTROLES ---------- */
+function handleInput(mx, my) {
+  audio.resume();
+  if (gameState === 'playing') {
+    player.jump();
+    return;
+  }
+  if (gameState === 'menu') {
+    if (isButtonHit(W/2, 400, 160, 44, mx, my)) {
+      initGame();
+      gameState = 'playing';
+    } else if (isButtonHit(W/2, 458, 160, 38, mx, my)) {
+      gameState = 'howto';
+    } else if (isButtonHit(W/2, 507, 160, 38, mx, my)) {
+      gameState = 'credits';
+    }
+    return;
+  }
+  if (gameState === 'gameover') {
+    const panY = (H - 380) / 2;
+    if (isButtonHit(W/2, panY + 330, 180, 44, mx, my)) {
+      initGame();
+      gameState = 'playing';
+    } else if (isButtonHit(W/2, panY + 370, 120, 30, mx, my)) {
+      gameState = 'menu';
+    }
+    return;
+  }
+  if (gameState === 'howto' || gameState === 'credits') {
+    if (isButtonHit(W/2, 555, 160, 40, mx, my) ||
+        isButtonHit(W/2, 525, 160, 40, mx, my)) {
+      gameState = 'menu';
+    }
+    return;
+  }
+}
+
+// Teclado
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    handleInput(W / 2, H / 2);
+  }
+});
+
+// Mouse
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+  handleInput(mx, my);
+});
+
+// Touch
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const t = e.changedTouches[0];
+  const mx = (t.clientX - rect.left) * scaleX;
+  const my = (t.clientY - rect.top) * scaleY;
+  handleInput(mx, my);
+}, { passive: false });
+
+// Responsividade: escala do canvas para caber na tela
+function resizeCanvas() {
+  const container = document.getElementById('gameContainer');
+  const maxW = Math.min(window.innerWidth, 400);
+  const maxH = Math.min(window.innerHeight, 600);
+  const scale = Math.min(maxW / W, maxH / H);
+  container.style.width = (W * scale) + 'px';
+  container.style.height = (H * scale) + 'px';
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+/* ---------- INICIA O LOOP ---------- */
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
